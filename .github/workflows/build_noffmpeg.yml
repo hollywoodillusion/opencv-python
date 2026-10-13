@@ -1,0 +1,166 @@
+name: Headless wheels without FFmpeg
+
+# Builds opencv-python-headless from the unmodified release tag 93 (5.0.0.93) with
+# FFmpeg and GStreamer disabled, verifies the wheels and attaches them to a release.
+# The sources are checked out at the tag so that `git describe` yields the 5.0.0.93 version.
+
+on:
+  push:
+    branches:
+      - noffmpeg-build
+  workflow_dispatch:
+
+env:
+  SOURCE_TAG: '93'
+  EXPECTED_VERSION: 5.0.0.93
+  RELEASE_TAG: v5.0.0.93-noffmpeg-1
+  ENABLE_HEADLESS: 1
+  CMAKE_ARGS: -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DPYTHON3_LIMITED_API=ON
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    env:
+      CI_BUILD: 1
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+    steps:
+    - name: Checkout sources at tag
+      uses: actions/checkout@v7
+      with:
+        ref: refs/tags/${{ env.SOURCE_TAG }}
+        path: src
+        fetch-depth: 0
+        submodules: false
+    - name: Checkout CI scripts
+      uses: actions/checkout@v7
+      with:
+        path: ci
+        sparse-checkout: .github/noffmpeg
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Build wheel
+      working-directory: src
+      run: |
+        python -m pip install --upgrade pip wheel delocate toml
+        python -c 'import toml; c = toml.load("pyproject.toml"); print("\n".join(c["build-system"]["requires"]))' | python -m pip install -r /dev/stdin
+        python setup.py bdist_wheel --py-limited-api=cp37 --dist-dir=dist -v 2>&1 | tee ../build.log
+    - name: Check CMake configuration
+      run: |
+        grep -hE '^(WITH_FFMPEG|WITH_GSTREAMER|HAVE_FFMPEG|WITH_OPENEXR|BUILD_OPENEXR)[:=]' src/_skbuild/*/cmake-build/CMakeCache.txt | tee cmake-check.txt
+        grep -q '^WITH_FFMPEG:BOOL=OFF' cmake-check.txt
+        grep -q '^WITH_GSTREAMER:BOOL=OFF' cmake-check.txt
+        echo "--- CMake summary (Video I/O / Media I/O / GUI) ---" | tee -a cmake-check.txt
+        grep -E '^\s+(FFMPEG|GStreamer|AVFoundation|OpenEXR|GUI|Cocoa|PNG|JPEG|AVIF):' build.log | tee -a cmake-check.txt || true
+    - name: Delocate
+      run: |
+        delocate-wheel -v -w wheelhouse src/dist/opencv_python_headless-*.whl
+        ls wheelhouse
+        ls wheelhouse | grep -q "^opencv_python_headless-${EXPECTED_VERSION}-"
+    - name: Verify wheel
+      run: |
+        WHEEL=$(ls wheelhouse/opencv_python_headless-*.whl)
+        REPORT=$PWD/wheelhouse/verify-macos-arm64.txt
+        cat cmake-check.txt > "$REPORT"
+        python ci/.github/noffmpeg/verify.py zip "$WHEEL" | tee -a "$REPORT"
+        python -m venv "$RUNNER_TEMP/venv"
+        "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
+        "$RUNNER_TEMP/venv/bin/python" -m pip install "$WHEEL"
+        cd "$RUNNER_TEMP"
+        "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/ci/.github/noffmpeg/verify.py" runtime mac 2>&1 | tee -a "$REPORT"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: wheel-macos-arm64
+        path: wheelhouse/*
+
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    env:
+      PY: /opt/python/cp311-cp311/bin/python
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+    steps:
+    - name: Checkout sources at tag
+      uses: actions/checkout@v7
+      with:
+        ref: refs/tags/${{ env.SOURCE_TAG }}
+        path: src
+        fetch-depth: 0
+        submodules: false
+    - name: Checkout CI scripts
+      uses: actions/checkout@v7
+      with:
+        path: ci
+        sparse-checkout: .github/noffmpeg
+    - name: Build wheel
+      working-directory: src
+      run: |
+        git config --global --add safe.directory '*'
+        $PY -m pip install --upgrade pip wheel toml
+        $PY -c 'import toml; c = toml.load("pyproject.toml"); print("\n".join(c["build-system"]["requires"]))' | $PY -m pip install -r /dev/stdin
+        $PY setup.py bdist_wheel --py-limited-api=cp37 --dist-dir=dist -v 2>&1 | tee ../build.log
+    - name: Check CMake configuration
+      run: |
+        grep -hE '^(WITH_FFMPEG|WITH_GSTREAMER|HAVE_FFMPEG|WITH_OPENEXR|BUILD_OPENEXR)[:=]' src/_skbuild/*/cmake-build/CMakeCache.txt | tee cmake-check.txt
+        grep -q '^WITH_FFMPEG:BOOL=OFF' cmake-check.txt
+        grep -q '^WITH_GSTREAMER:BOOL=OFF' cmake-check.txt
+        echo "--- CMake summary (Video I/O / Media I/O / GUI) ---" | tee -a cmake-check.txt
+        grep -E '^\s+(FFMPEG|GStreamer|V4L/V4L2|OpenEXR|GUI|PNG|JPEG|AVIF):' build.log | tee -a cmake-check.txt || true
+    - name: auditwheel repair
+      run: |
+        auditwheel repair -w wheelhouse src/dist/opencv_python_headless-*.whl
+        ls wheelhouse
+        ls wheelhouse | grep -q "^opencv_python_headless-${EXPECTED_VERSION}-"
+    - name: Verify wheel
+      run: |
+        WHEEL=$(ls wheelhouse/opencv_python_headless-*.whl)
+        REPORT=$PWD/wheelhouse/verify-linux-x86_64.txt
+        cat cmake-check.txt > "$REPORT"
+        $PY ci/.github/noffmpeg/verify.py zip "$WHEEL" | tee -a "$REPORT"
+        $PY -m venv "$RUNNER_TEMP/venv"
+        "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
+        "$RUNNER_TEMP/venv/bin/python" -m pip install "$WHEEL"
+        cd "$RUNNER_TEMP"
+        "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/ci/.github/noffmpeg/verify.py" runtime linux 2>&1 | tee -a "$REPORT"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: wheel-linux-x86_64
+        path: wheelhouse/*
+
+  release:
+    needs: [macos-arm64, linux-x86_64]
+    if: always() && needs.macos-arm64.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        path: out
+        merge-multiple: true
+    - name: Publish release
+      run: |
+        ls -l out
+        cat > notes.md <<EOF
+        opencv-python-headless ${EXPECTED_VERSION} built from upstream tag ${SOURCE_TAG} without FFmpeg and GStreamer
+        (\`${CMAKE_ARGS}\`, \`ENABLE_HEADLESS=1\`). No libavcodec/libavformat/x264/x265/Qt in the wheels.
+        OpenEXR is built in (enable at runtime with \`OPENCV_IO_ENABLE_OPENEXR=1\`).
+
+        Linux job: ${{ needs.linux-x86_64.result }}. Build commit: ${{ github.sha }}.
+        Verification reports are attached as verify-*.txt.
+        EOF
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          gh release upload "$RELEASE_TAG" out/* --clobber
+        else
+          gh release create "$RELEASE_TAG" out/* --target "${{ github.sha }}" \
+            --title "opencv-python-headless ${EXPECTED_VERSION} (no FFmpeg)" --notes-file notes.md
+        fi
+        gh release view "$RELEASE_TAG" --json url,assets --jq '.url, .assets[].name'

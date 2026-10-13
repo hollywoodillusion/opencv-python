@@ -21,7 +21,7 @@ env:
   ENABLE_HEADLESS: 1
   CMAKE_ARGS: -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_OPENEXR=OFF -DPYTHON3_LIMITED_API=ON
   # Platforms built on push. Wheels already in the release are not rebuilt, so their hashes stay stable.
-  PUSH_PLATFORMS: windows-x64
+  PUSH_PLATFORMS: macos-arm64 linux-x86_64 windows-x64
 
 defaults:
   run:
@@ -185,6 +185,7 @@ jobs:
         python -m pip install cmake==4.3.2
         python -c 'import toml; c = toml.load("pyproject.toml"); print("\n".join(c["build-system"]["requires"]))' > ../build-requirements.txt
         python -m pip install -r ../build-requirements.txt
+        python ../ci/.github/noffmpeg/patch_setup.py setup.py
         python setup.py bdist_wheel --py-limited-api=cp37 --dist-dir=dist -v 2>&1 | tee ../build.log \
           || { grep -iE 'error|fatal|failed' ../build.log | grep -viE 'warning|-Werror|error\.(h|cpp)' | tail -9 | sed 's/^/::error::/'; tail -60 ../build.log | tr -d '\r' | awk 'BEGIN{printf "::error::build.log tail%%0A"} {gsub(/%/,"%25"); printf "%s%%0A", $0} END{print ""}'; exit 1; }
     - name: Check CMake configuration
@@ -219,9 +220,9 @@ jobs:
 
   release:
     needs: [plan, macos-arm64, linux-x86_64, windows-x64]
-    # Publish whatever built and verified, unless a requested platform failed.
+    # Publish every platform that built and verified; a failed platform never blocks the others.
     if: >-
-      always() && !cancelled() && !contains(needs.*.result, 'failure') &&
+      always() && !cancelled() &&
       (needs.macos-arm64.result == 'success' || needs.linux-x86_64.result == 'success' ||
        needs.windows-x64.result == 'success')
     runs-on: ubuntu-24.04

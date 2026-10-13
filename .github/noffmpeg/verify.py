@@ -1,7 +1,7 @@
 """Verification for the no-FFmpeg opencv-python-headless wheels.
 
   verify.py zip <wheel>          check the wheel contents for FFmpeg/x264/x265/Qt/GStreamer
-  verify.py runtime <linux|mac>  run inside a clean venv with the wheel installed
+  verify.py runtime <linux|mac|windows>  run inside a clean venv with the wheel installed
 """
 import os
 import re
@@ -9,7 +9,7 @@ import sys
 import tempfile
 import zipfile
 
-FORBIDDEN = re.compile(r"avcodec|avformat|avutil|avdevice|avfilter|swscale|swresample|postproc"
+FORBIDDEN = re.compile(r"ffmpeg|avcodec|avformat|avutil|avdevice|avfilter|swscale|swresample|postproc"
                        r"|x264|x265|qt|gstreamer|gst", re.I)
 
 
@@ -18,13 +18,13 @@ def check_zip(wheel):
     print("Wheel:", os.path.basename(wheel))
     print("Bundled native libraries:")
     for n in names:
-        if re.search(r"\.(so|dylib)(\.|$)", n):
+        if re.search(r"\.(so|dylib|dll|pyd)(\.|$)", n, re.I):
             print("   ", n)
     bad = [n for n in names if FORBIDDEN.search(n)]
     if bad:
         print("FORBIDDEN FILES FOUND:\n  " + "\n  ".join(bad))
         return 1
-    print("Forbidden-file check: OK (no avcodec/avformat/x264/x265/qt/gstreamer)")
+    print("Forbidden-file check: OK (no ffmpeg/avcodec/avformat/x264/x265/qt/gstreamer)")
     return 0
 
 
@@ -60,7 +60,7 @@ def check_runtime(plat):
     if not exr or exr.upper().startswith("NO"):
         errors.append("OpenEXR not enabled: %s" % exr)
     # macOS always builds the Cocoa backend (OpenCVFindLibsGUI.cmake), Apple system framework
-    if plat == "linux" and (gui or "").upper() != "NONE":
+    if plat != "mac" and (gui or "").upper() != "NONE":
         errors.append("GUI is not NONE: %s" % gui)
     print("Video I/O backends:", [cv2.videoio_registry.getBackendName(b)
                                   for b in cv2.videoio_registry.getBackends()])

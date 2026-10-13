@@ -1,8 +1,7 @@
 name: Headless wheels without FFmpeg
 
 # Builds opencv-python-headless from the unmodified release tag 93 (5.0.0.93) with
-# FFmpeg and GStreamer disabled and a static OpenEXR 3 (OpenCV 5 no longer bundles it),
-# verifies the wheels and attaches them to a release.
+# FFmpeg, GStreamer and OpenEXR disabled, verifies the wheels and attaches them to a release.
 # The sources are checked out at the tag so that `git describe` yields the 5.0.0.93 version.
 
 on:
@@ -19,11 +18,14 @@ env:
   SOURCE_TAG: '93'
   EXPECTED_VERSION: 5.0.0.93
   RELEASE_TAG: v5.0.0.93-noffmpeg-1
-  OPENEXR_VERSION: 3.3.14
   ENABLE_HEADLESS: 1
-  CMAKE_ARGS: -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DPYTHON3_LIMITED_API=ON
+  CMAKE_ARGS: -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_OPENEXR=OFF -DPYTHON3_LIMITED_API=ON
   # Platforms built on push. Wheels already in the release are not rebuilt, so their hashes stay stable.
   PUSH_PLATFORMS: macos-arm64 linux-x86_64 windows-x64
+
+concurrency:
+  group: noffmpeg-build
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -62,11 +64,6 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    - name: Build OpenEXR
-      run: |
-        PREFIX=$(echo "$GITHUB_WORKSPACE/openexr-install")
-        bash ci/.github/noffmpeg/build_openexr.sh "$PREFIX"
-        echo "CMAKE_ARGS=$CMAKE_ARGS -DWITH_OPENEXR=ON -DCMAKE_PREFIX_PATH=$PREFIX" >> "$GITHUB_ENV"
     - name: Build wheel
       working-directory: src
       run: |
@@ -78,7 +75,6 @@ jobs:
         grep -hE '^(WITH_FFMPEG|WITH_GSTREAMER|HAVE_FFMPEG|WITH_OPENEXR|BUILD_OPENEXR)[:=]' src/_skbuild/*/cmake-build/CMakeCache.txt | tee cmake-check.txt
         grep -q '^WITH_FFMPEG:BOOL=OFF' cmake-check.txt
         grep -q '^WITH_GSTREAMER:BOOL=OFF' cmake-check.txt
-        grep -E '^\s+OpenEXR:' build.log | grep -q 'ver 3'
         echo "--- CMake summary (Video I/O / Media I/O / GUI) ---" | tee -a cmake-check.txt
         grep -E '^\s+(FFMPEG|GStreamer|AVFoundation|OpenEXR|GUI|Cocoa|PNG|JPEG|AVIF):' build.log | tee -a cmake-check.txt || true
     - name: Delocate
@@ -123,11 +119,6 @@ jobs:
       with:
         path: ci
         sparse-checkout: .github/noffmpeg
-    - name: Build OpenEXR
-      run: |
-        PREFIX=$(echo "$GITHUB_WORKSPACE/openexr-install")
-        bash ci/.github/noffmpeg/build_openexr.sh "$PREFIX"
-        echo "CMAKE_ARGS=$CMAKE_ARGS -DWITH_OPENEXR=ON -DCMAKE_PREFIX_PATH=$PREFIX" >> "$GITHUB_ENV"
     - name: Build wheel
       working-directory: src
       run: |
@@ -140,7 +131,6 @@ jobs:
         grep -hE '^(WITH_FFMPEG|WITH_GSTREAMER|HAVE_FFMPEG|WITH_OPENEXR|BUILD_OPENEXR)[:=]' src/_skbuild/*/cmake-build/CMakeCache.txt | tee cmake-check.txt
         grep -q '^WITH_FFMPEG:BOOL=OFF' cmake-check.txt
         grep -q '^WITH_GSTREAMER:BOOL=OFF' cmake-check.txt
-        grep -E '^\s+OpenEXR:' build.log | grep -q 'ver 3'
         echo "--- CMake summary (Video I/O / Media I/O / GUI) ---" | tee -a cmake-check.txt
         grep -E '^\s+(FFMPEG|GStreamer|V4L/V4L2|OpenEXR|GUI|PNG|JPEG|AVIF):' build.log | tee -a cmake-check.txt || true
     - name: auditwheel repair
@@ -190,11 +180,6 @@ jobs:
         architecture: x64
     - uses: microsoft/setup-msbuild@v1.1
     - uses: ilammy/setup-nasm@v1
-    - name: Build OpenEXR
-      run: |
-        PREFIX=$(cygpath -m "$GITHUB_WORKSPACE/openexr-install")
-        bash ci/.github/noffmpeg/build_openexr.sh "$PREFIX"
-        echo "CMAKE_ARGS=$CMAKE_ARGS -DWITH_OPENEXR=ON -DCMAKE_PREFIX_PATH=$PREFIX" >> "$GITHUB_ENV"
     - name: Build wheel
       working-directory: src
       run: |
@@ -208,7 +193,6 @@ jobs:
         grep -hE '^(WITH_FFMPEG|WITH_GSTREAMER|HAVE_FFMPEG|WITH_OPENEXR|BUILD_OPENEXR)[:=]' src/_skbuild/*/cmake-build/CMakeCache.txt | tee cmake-check.txt
         grep -q '^WITH_FFMPEG:BOOL=OFF' cmake-check.txt
         grep -q '^WITH_GSTREAMER:BOOL=OFF' cmake-check.txt
-        grep -E '^\s+OpenEXR:' build.log | grep -q 'ver 3'
         echo "--- CMake summary (Video I/O / Media I/O / GUI) ---" | tee -a cmake-check.txt
         grep -E '^\s+(FFMPEG|GStreamer|DirectShow|Media Foundation|OpenEXR|GUI|PNG|JPEG|AVIF):' build.log | tee -a cmake-check.txt || true
     - name: Collect wheel
@@ -256,23 +240,18 @@ jobs:
       run: |
         ls -l out
         RESULTS="macOS arm64: ${{ needs.macos-arm64.result }}, Linux x86_64: ${{ needs.linux-x86_64.result }}, Windows x64: ${{ needs.windows-x64.result }}"
-        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-          gh release upload "$RELEASE_TAG" out/* --clobber
-          gh release view "$RELEASE_TAG" --json body --jq .body > notes.md
-          echo "" >> notes.md
-          echo "Assets added by build commit ${{ github.sha }} ($RESULTS)." >> notes.md
-          gh release edit "$RELEASE_TAG" --notes-file notes.md
-        else
-          cat > notes.md <<EOF
+        cat > notes.md <<EOF
         opencv-python-headless ${EXPECTED_VERSION} built from upstream tag ${SOURCE_TAG} without FFmpeg and GStreamer
         (\`${CMAKE_ARGS}\`, \`ENABLE_HEADLESS=1\`). No FFmpeg/libavcodec/libavformat/x264/x265/Qt in the wheels.
-        OpenEXR ${OPENEXR_VERSION} is linked statically (OpenCV 5 no longer bundles it, so the PyPI wheels have no EXR
-        support); enable it at runtime with \`OPENCV_IO_ENABLE_OPENEXR=1\`.
+        OpenEXR is disabled (OpenCV 5 no longer bundles it; the PyPI wheels have no EXR support either).
 
         Build commit: ${{ github.sha }} ($RESULTS).
         Verification reports are attached as verify-*.txt.
         EOF
-          gh release create "$RELEASE_TAG" out/* --target "${{ github.sha }}" \
-            --title "opencv-python-headless ${EXPECTED_VERSION} (no FFmpeg)" --notes-file notes.md
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          gh release upload "$RELEASE_TAG" out/* --clobber
+          gh release edit "$RELEASE_TAG" --notes-file notes.md
+        else
+          gh release create "$RELEASE_TAG" out/* --target "${{ github.sha }}"             --title "opencv-python-headless ${EXPECTED_VERSION} (no FFmpeg)" --notes-file notes.md
         fi
         gh release view "$RELEASE_TAG" --json url,assets --jq '.url, .assets[].name'

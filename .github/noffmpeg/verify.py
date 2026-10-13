@@ -35,7 +35,6 @@ def section_value(info, key):
 
 
 def check_runtime(plat):
-    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     import numpy as np
     import cv2
 
@@ -64,8 +63,8 @@ def check_runtime(plat):
         # A plugin backend could only load an external opencv_videoio_ffmpeg library, never shipped here
         print("%s: built-in=%s available=%s" % (name, cv2.videoio_registry.isBackendBuiltIn(cap),
                                                 cv2.videoio_registry.hasBackend(cap)))
-    if not exr or exr.upper().startswith("NO"):
-        fail("OpenEXR not enabled: %s" % exr)
+    if exr and not exr.upper().startswith("NO"):
+        fail("OpenEXR enabled: %s (expected off)" % exr)
     # macOS always builds the Cocoa backend (OpenCVFindLibsGUI.cmake), Apple system framework
     if plat != "mac" and (gui or "").upper() != "NONE":
         fail("GUI is not NONE: %s" % gui)
@@ -93,8 +92,6 @@ def check_runtime(plat):
     rgb8 = rng.integers(0, 255, (64, 80, 3), dtype=np.uint8)
     roundtrip("png8_rgb", rgb8, ".png")
     roundtrip("jpeg8_rgb", rgb8, ".jpg", [cv2.IMWRITE_JPEG_QUALITY, 95], exact=False)
-    roundtrip("exr_f32_3ch", rng.random((32, 48, 3), dtype=np.float32) * 4.0, ".exr")
-    roundtrip("exr_f32_4ch", rng.random((32, 48, 4), dtype=np.float32) * 4.0, ".exr")
 
     try:
         img = cv2.resize(rgb8, (40, 32), interpolation=cv2.INTER_AREA)
